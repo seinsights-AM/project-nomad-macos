@@ -956,13 +956,99 @@ launch_services() {
 }
 
 ###################################################################################################################################################################################################
-#                                                                                     Ollama Config Hint                                                                                          #
+#                                                                                  AI Model Recommendation                                                                                        #
 ###################################################################################################################################################################################################
 
-configure_ollama_hint() {
-  step "Step 6 — Connect AI"
+# Returns the best Ollama model for the given unified memory (in GB)
+get_recommended_model() {
+  local mem_gb=$1
 
-  echo -e "  Ollama is running natively on your Mac with ${GREEN}Metal GPU acceleration${RESET}."
+  if (( mem_gb >= 128 )); then
+    echo "qwen3.5:122b-a10b|~81 GB|122B params (10B active MoE)|20-35 tok/s|Massive knowledge depth, 10B active for fast inference"
+  elif (( mem_gb >= 96 )); then
+    echo "deepseek-r1:70b|~43 GB|70B params|12-18 tok/s|Best-in-class reasoning for complex document analysis"
+  elif (( mem_gb >= 64 )); then
+    echo "deepseek-r1:70b|~43 GB|70B params|12-18 tok/s|Superior reasoning engine with comfortable headroom"
+  elif (( mem_gb >= 48 )); then
+    echo "deepseek-r1:32b|~20 GB|32B params|25-40 tok/s|RL-trained reasoning, excellent for RAG Q&A"
+  elif (( mem_gb >= 36 )); then
+    echo "qwen3.5:35b-a3b|~24 GB|35B params (3B active MoE)|50-80 tok/s|Best value — 35B knowledge at 3B speed"
+  elif (( mem_gb >= 32 )); then
+    echo "qwen3.5:35b-a3b|~24 GB|35B params (3B active MoE)|50-80 tok/s|MoE architecture: fast and capable"
+  elif (( mem_gb >= 24 )); then
+    echo "qwen3:30b-a3b|~19 GB|30B params (3B active MoE)|50-84 tok/s|MoE punches way above its weight class"
+  elif (( mem_gb >= 18 )); then
+    echo "qwen3:14b|~9.3 GB|14B params|30-45 tok/s|Sweet spot for 18GB — strong reasoning and RAG"
+  elif (( mem_gb >= 16 )); then
+    echo "qwen3:8b|~5.2 GB|8B params|45-65 tok/s|Fast and capable with plenty of headroom"
+  else
+    echo "qwen3:4b|~2.5 GB|4B params|55-80 tok/s|Best sub-5B model, fits tight memory budgets"
+  fi
+}
+
+configure_ollama_hint() {
+  step "Step 6 — AI Setup"
+
+  # Detect unified memory
+  local total_mem_bytes
+  total_mem_bytes=$(sysctl -n hw.memsize 2>/dev/null)
+  local total_mem_gb=$(( total_mem_bytes / 1073741824 ))
+
+  # Get model recommendation
+  local recommendation
+  recommendation=$(get_recommended_model "$total_mem_gb")
+
+  local model_tag download_size model_desc speed reason
+  IFS='|' read -r model_tag download_size model_desc speed reason <<< "$recommendation"
+
+  echo -e "  ${BOLD}Your Mac: ${total_mem_gb} GB unified memory${RESET}"
+  echo ""
+  echo -e "  ${BOLD}${WHITE}Recommended AI model:${RESET}"
+  echo ""
+  echo -e "    ${CYAN}${model_tag}${RESET}"
+  echo -e "    ${DIM}${model_desc} · ${download_size} download · ${speed}${RESET}"
+  echo -e "    ${DIM}${reason}${RESET}"
+  echo ""
+
+  # Check if any Ollama models are already installed
+  local installed_models=""
+  if curl -sf http://localhost:11434/api/tags &>/dev/null; then
+    installed_models=$(curl -sf http://localhost:11434/api/tags 2>/dev/null | grep -o '"name":"[^"]*"' | sed 's/"name":"//;s/"//' | head -5)
+  fi
+
+  if [[ -n "$installed_models" ]]; then
+    info "You already have models installed:"
+    echo "$installed_models" | while read -r m; do
+      echo -e "    ${DIM}• ${m}${RESET}"
+    done
+    echo ""
+  fi
+
+  if $DRY_RUN; then
+    dry "Would offer to pull ${model_tag}"
+  else
+    echo -ne "  Download ${BOLD}${model_tag}${RESET} now? ${DIM}(y/N)${RESET} "
+    local pull_choice
+    prompt pull_choice
+    case "$pull_choice" in
+      y|Y)
+        info "Pulling ${model_tag} (this may take a while)..."
+        if ollama pull "$model_tag"; then
+          success "Model ${model_tag} downloaded!"
+        else
+          warn "Download failed. You can pull it later with: ollama pull ${model_tag}"
+        fi
+        ;;
+      *)
+        info "Skipped. Pull it anytime with: ${CYAN}ollama pull ${model_tag}${RESET}"
+        ;;
+    esac
+  fi
+
+  echo ""
+  divider
+  echo ""
+  echo -e "  ${BOLD}Connect N.O.M.A.D. to Ollama:${RESET}"
   echo ""
   echo "  After opening the N.O.M.A.D. interface, go to:"
   echo -e "    ${BOLD}Settings → Models → Remote Ollama Server${RESET}"
