@@ -23,14 +23,14 @@ jobs:
       - name: Install ShellCheck
         run: sudo apt-get install -y shellcheck
 
-      - name: Lint install_nomad_macos.sh
-        run: shellcheck -x -s bash install/install_nomad_macos.sh || true
+      - name: Lint install_nomad_macos.sh (warnings)
+        run: shellcheck -x -s bash -S warning install/install_nomad_macos.sh || echo "::warning::ShellCheck found warnings in install_nomad_macos.sh"
 
-      - name: Lint start_nomad_macos.sh
-        run: shellcheck -x -s bash install/start_nomad_macos.sh || true
+      - name: Lint start_nomad_macos.sh (warnings)
+        run: shellcheck -x -s bash -S warning install/start_nomad_macos.sh || echo "::warning::ShellCheck found warnings in start_nomad_macos.sh"
 
-      - name: Lint stop_nomad_macos.sh
-        run: shellcheck -x -s bash install/stop_nomad_macos.sh || true
+      - name: Lint stop_nomad_macos.sh (warnings)
+        run: shellcheck -x -s bash -S warning install/stop_nomad_macos.sh || echo "::warning::ShellCheck found warnings in stop_nomad_macos.sh"
 
       - name: Strict lint (errors only, fail on real issues)
         run: |
@@ -87,6 +87,7 @@ jobs:
           sed -i '' 's|DB_PASSWORD=replaceme|DB_PASSWORD=testpass123|g' /tmp/test-compose.yaml
           sed -i '' 's|MYSQL_ROOT_PASSWORD=replaceme|MYSQL_ROOT_PASSWORD=testroot123|g' /tmp/test-compose.yaml
           sed -i '' 's|MYSQL_PASSWORD=replaceme|MYSQL_PASSWORD=testpass123|g' /tmp/test-compose.yaml
+          sed -i '' 's|replaceme_redis|testredis123|g' /tmp/test-compose.yaml
 
       - name: Validate compose file syntax
         run: docker-compose -f /tmp/test-compose.yaml config --quiet

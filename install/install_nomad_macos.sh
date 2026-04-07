@@ -63,8 +63,8 @@ STEPS_COMPLETED=()
 # Read user input — works both in interactive mode and curl|bash piped mode
 prompt() {
   if $DRY_RUN; then
-    # In dry-run, auto-answer with the first argument's default or "y"
-    eval "$1='y'"
+    # In dry-run, auto-answer with "y" — uses printf -v for safe variable assignment (no eval)
+    printf -v "$1" '%s' 'y'
     return 0
   fi
   read -r "$@" </dev/tty
@@ -664,6 +664,8 @@ setup_compose() {
   db_root_password=$(generate_password)
   local db_user_password
   db_user_password=$(generate_password)
+  local redis_password
+  redis_password=$(generate_password)
   local local_ip
   local_ip=$(get_local_ip)
 
@@ -675,13 +677,22 @@ setup_compose() {
     mkdir -p "${NOMAD_DIR}/mysql"
   fi
 
+  # Escape sed special characters in NOMAD_DIR (handles &, \, / in volume names)
+  local escaped_dir
+  escaped_dir=$(printf '%s\n' "$NOMAD_DIR" | sed 's/[&\\/]/\\&/g')
+
   # Inject credentials into compose file (BSD sed compatible)
-  sed -i '' "s|NOMAD_DIR_PLACEHOLDER|${NOMAD_DIR}|g" "$compose_file"
+  sed -i '' "s|NOMAD_DIR_PLACEHOLDER|${escaped_dir}|g" "$compose_file"
   sed -i '' "s|URL=replaceme|URL=http://${local_ip}:8080|g" "$compose_file"
   sed -i '' "s|APP_KEY=replaceme|APP_KEY=${app_key}|g" "$compose_file"
   sed -i '' "s|DB_PASSWORD=replaceme|DB_PASSWORD=${db_user_password}|g" "$compose_file"
   sed -i '' "s|MYSQL_ROOT_PASSWORD=replaceme|MYSQL_ROOT_PASSWORD=${db_root_password}|g" "$compose_file"
   sed -i '' "s|MYSQL_PASSWORD=replaceme|MYSQL_PASSWORD=${db_user_password}|g" "$compose_file"
+  sed -i '' "s|replaceme_redis|${redis_password}|g" "$compose_file"
+
+  # Restrict permissions on compose file (contains credentials)
+  chmod 600 "$compose_file"
+  chmod 700 "${NOMAD_DIR}"
 
   success "Docker Compose configured with secure credentials"
   save_state "compose"
@@ -692,7 +703,7 @@ generate_macos_compose() {
   local file="$1"
   cat > "$file" << 'COMPOSE_EOF'
 # Project N.O.M.A.D. — macOS Docker Compose Configuration
-# Adapted for macOS: no disk-collector, no NVIDIA, native Ollama
+# Security hardened: localhost-only ports, Redis auth, network segmentation
 name: project-nomad
 services:
   admin:
@@ -701,7 +712,7 @@ services:
     container_name: nomad_admin
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     volumes:
       - NOMAD_DIR_PLACEHOLDER/storage:/app/storage
       - /var/run/docker.sock:/var/run/docker.sock
@@ -722,12 +733,16 @@ services:
       - DB_SSL=false
       - REDIS_HOST=redis
       - REDIS_PORT=6379
+      - REDIS_PASSWORD=replaceme_redis
       - DISABLE_COMPRESSION=false
     depends_on:
       mysql:
         condition: service_healthy
       redis:
         condition: service_healthy
+    networks:
+      - frontend
+      - backend
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/api/health"]
       interval: 30s
@@ -738,12 +753,14 @@ services:
     container_name: nomad_dozzle
     restart: unless-stopped
     ports:
-      - "9999:8080"
+      - "127.0.0.1:9999:8080"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - DOZZLE_ENABLE_ACTIONS=false
       - DOZZLE_ENABLE_SHELL=false
+    networks:
+      - frontend
   mysql:
     image: mysql:8.0
     container_name: nomad_mysql
@@ -755,6 +772,8 @@ services:
       - MYSQL_PASSWORD=replaceme
     volumes:
       - NOMAD_DIR_PLACEHOLDER/mysql:/var/lib/mysql
+    networks:
+      - backend
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
       interval: 30s
@@ -764,10 +783,13 @@ services:
     image: redis:7-alpine
     container_name: nomad_redis
     restart: unless-stopped
+    command: ["redis-server", "--requirepass", "replaceme_redis"]
     volumes:
       - NOMAD_DIR_PLACEHOLDER/redis:/data
+    networks:
+      - backend
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "-a", "replaceme_redis", "ping"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -780,6 +802,14 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - NOMAD_DIR_PLACEHOLDER:NOMAD_DIR_PLACEHOLDER
       - nomad-update-shared:/shared
+    networks:
+      - frontend
+
+networks:
+  frontend:
+    driver: bridge
+  backend:
+    driver: bridge
 
 volumes:
   nomad-update-shared:

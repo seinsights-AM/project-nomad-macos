@@ -7,6 +7,14 @@
 #   - Volume paths use NOMAD_DIR_PLACEHOLDER (replaced by installer with actual path)
 #   - Updater volume mapped to actual install path (not hardcoded /opt/project-nomad)
 #
+# Security hardening (vs upstream):
+#   - Admin and Dozzle bound to localhost only (not exposed to LAN by default)
+#   - Redis requires authentication
+#   - Network segmentation: only admin can reach backend services
+#   - Credentials file permissions set to 600 by installer
+#
+# To expose to your LAN, change "127.0.0.1:8080:8080" to "8080:8080" in the admin ports below.
+#
 # Ollama runs NATIVELY on macOS (not in Docker) for Apple Metal GPU acceleration.
 # Configure in the N.O.M.A.D. UI: Settings → Models → Remote Ollama Server → http://host.docker.internal:11434
 
@@ -18,10 +26,12 @@ services:
     container_name: nomad_admin
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      # Bound to localhost by default for security. To expose to your LAN,
+      # change to "8080:8080" and access via http://<your-ip>:8080
+      - "127.0.0.1:8080:8080"
     volumes:
       - NOMAD_DIR_PLACEHOLDER/storage:/app/storage
-      - /var/run/docker.sock:/var/run/docker.sock
+      - /var/run/docker.sock:/var/run/docker.sock  # Required: allows admin to manage Docker services
       - nomad-update-shared:/app/update-shared
     environment:
       - NODE_ENV=production
@@ -44,12 +54,16 @@ services:
       - DB_SSL=false
       - REDIS_HOST=redis
       - REDIS_PORT=6379
+      - REDIS_PASSWORD=replaceme_redis
       - DISABLE_COMPRESSION=false
     depends_on:
       mysql:
         condition: service_healthy
       redis:
         condition: service_healthy
+    networks:
+      - frontend
+      - backend
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/api/health"]
       interval: 30s
@@ -62,12 +76,16 @@ services:
     container_name: nomad_dozzle
     restart: unless-stopped
     ports:
-      - "9999:8080"
+      # Bound to localhost only — Dozzle has no authentication and shows container logs
+      # which may contain sensitive information. Do NOT expose to LAN unless you add auth.
+      - "127.0.0.1:9999:8080"
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
+      - /var/run/docker.sock:/var/run/docker.sock  # Required: reads container logs
     environment:
-      - DOZZLE_ENABLE_ACTIONS=false
-      - DOZZLE_ENABLE_SHELL=false
+      - DOZZLE_ENABLE_ACTIONS=false  # Disabled — unauthenticated container stop/restart
+      - DOZZLE_ENABLE_SHELL=false    # Disabled — shell access + Docker socket = privilege escalation
+    networks:
+      - frontend
 
   mysql:
     image: mysql:8.0
@@ -81,6 +99,8 @@ services:
       - MYSQL_PASSWORD=replaceme
     volumes:
       - NOMAD_DIR_PLACEHOLDER/mysql:/var/lib/mysql
+    networks:
+      - backend
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
       interval: 30s
@@ -91,29 +111,41 @@ services:
     image: redis:7-alpine
     container_name: nomad_redis
     restart: unless-stopped
+    command: ["redis-server", "--requirepass", "replaceme_redis"]
     volumes:
       - NOMAD_DIR_PLACEHOLDER/redis:/data
+    networks:
+      - backend
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "-a", "replaceme_redis", "ping"]
       interval: 30s
       timeout: 10s
       retries: 3
 
   updater:
     # Lightweight sidecar that enables self-updates from the N.O.M.A.D. UI
+    # Trust boundary: this container has Docker socket + R/W access to the install directory
     image: ghcr.io/crosstalk-solutions/project-nomad-sidecar-updater:latest
     pull_policy: always
     container_name: nomad_updater
     restart: unless-stopped
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - NOMAD_DIR_PLACEHOLDER:NOMAD_DIR_PLACEHOLDER
+      - /var/run/docker.sock:/var/run/docker.sock  # Required: pulls and restarts containers
+      - NOMAD_DIR_PLACEHOLDER:NOMAD_DIR_PLACEHOLDER  # Required: updates compose file
       - nomad-update-shared:/shared
+    networks:
+      - frontend
 
   # NOTE: disk-collector is intentionally excluded on macOS.
   # The Linux version mounts /:/host:ro,rslave and uses lsblk + /proc — neither works on macOS.
   # The admin UI handles missing disk data gracefully.
   # Future: a native macOS disk info script via launchd could provide this data.
+
+networks:
+  frontend:
+    driver: bridge
+  backend:
+    driver: bridge
 
 volumes:
   nomad-update-shared:

@@ -194,14 +194,47 @@ The macOS compose file (`management_compose_macos.yaml`) compared to the Linux v
 - **Resume-on-interrupt** — saves progress to a state file, picks up where you left off
 - **`--dry-run` mode** for testing the installer without installing anything
 
+#### Added: Security Hardening
+
+This fork adds several security improvements over the upstream default configuration:
+
+| Hardening | What Changed | Why |
+|---|---|---|
+| **Localhost-only ports** | Admin (`127.0.0.1:8080`) and Dozzle (`127.0.0.1:9999`) bound to localhost | Prevents unauthenticated access from other devices on your network |
+| **Redis authentication** | Redis requires a randomly generated password | Prevents any compromised container from freely accessing cached data |
+| **Network segmentation** | Separate `frontend` and `backend` Docker networks | Only the admin container can reach MySQL and Redis; Dozzle and updater are isolated |
+| **File permissions** | `compose.yml` set to `chmod 600`, install dir to `chmod 700` | Credentials in the compose file are only readable by the owning user |
+| **Safe variable handling** | `printf -v` instead of `eval`, sed special character escaping | Eliminates command injection risks from volume names or variable expansion |
+
+##### Exposing to Your Local Network
+
+By default, N.O.M.A.D. is only accessible from the Mac it's installed on (`localhost`). To access it from other devices on your network (phone, tablet, another computer):
+
+1. Edit `~/.project-nomad/compose.yml`
+2. Change `"127.0.0.1:8080:8080"` to `"8080:8080"`
+3. Restart: `docker compose -p project-nomad -f ~/.project-nomad/compose.yml up -d`
+4. Access at `http://<your-mac-ip>:8080`
+
+**Warning:** Do NOT change the Dozzle port (`127.0.0.1:9999:8080`) unless you add authentication. Dozzle shows container logs which may contain credentials.
+
+##### Trust Boundaries
+
+Three containers have access to the Docker socket, which is equivalent to root access on the host:
+
+- **admin** — required to install/manage services (Ollama, Kiwix, etc.)
+- **updater** — required to pull new images and update the compose file
+- **dozzle** — reads container logs (read-only use, but the socket grants more)
+
+This is inherited from the upstream design. If you want maximum security, you can remove dozzle from the compose file — it's optional.
+
 ### Docker Compose Services (macOS)
 
 | Service | Image | Port | Purpose |
 |---|---|---|---|
-| admin | `ghcr.io/crosstalk-solutions/project-nomad:latest` | 8080 | Command Center (main app) |
-| mysql | `mysql:8.0` | 3306 | Persistent database |
-| redis | `redis:7-alpine` | 6379 | Cache and job queues |
-| dozzle | `amir20/dozzle:v10.0` | 9999 | Container log viewer |
+| admin | `ghcr.io/crosstalk-solutions/project-nomad:latest` | localhost:8080 | Command Center (main app) |
+| mysql | `mysql:8.0` | internal only | Persistent database |
+| redis | `redis:7-alpine` | internal only | Cache and job queues (password-protected) |
+| dozzle | `amir20/dozzle:v10.0` | localhost:9999 | Container log viewer |
 | updater | `project-nomad-sidecar-updater:latest` | — | Self-update capability |
 
 **Not included on macOS:** `disk-collector` (Linux-only)
