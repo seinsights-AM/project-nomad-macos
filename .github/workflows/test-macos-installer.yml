@@ -236,12 +236,22 @@ jobs:
       - name: Extract and test generate_macos_compose function
         shell: bash
         run: |
-          # Extract the function to a temp file and source it
-          sed -n '/^generate_macos_compose()/,/^}/p' install/install_nomad_macos.sh > /tmp/gen_func.sh
-          source /tmp/gen_func.sh
+          # Create a small test script that defines the function and calls it
+          cat > /tmp/test_gen.sh << 'TESTEOF'
+          #!/bin/bash
+          set -e
+          TESTEOF
+
+          # Append the function definition
+          sed -n '/^generate_macos_compose()/,/^}/p' install/install_nomad_macos.sh >> /tmp/test_gen.sh
+
+          # Append the test calls
+          cat >> /tmp/test_gen.sh << 'TESTEOF'
+          generate_macos_compose /tmp/inline-compose.yaml
+          TESTEOF
 
           # Run it
-          generate_macos_compose /tmp/inline-compose.yaml
+          bash /tmp/test_gen.sh
 
           # Verify it was created
           if [[ ! -f /tmp/inline-compose.yaml ]]; then
