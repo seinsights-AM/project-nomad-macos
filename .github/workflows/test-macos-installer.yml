@@ -234,9 +234,11 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Extract and test generate_macos_compose function
+        shell: bash
         run: |
-          # Source just the function from the installer
-          source <(sed -n '/^generate_macos_compose()/,/^}/p' install/install_nomad_macos.sh)
+          # Extract the function to a temp file and source it
+          sed -n '/^generate_macos_compose()/,/^}/p' install/install_nomad_macos.sh > /tmp/gen_func.sh
+          source /tmp/gen_func.sh
 
           # Run it
           generate_macos_compose /tmp/inline-compose.yaml
