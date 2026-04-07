@@ -270,12 +270,12 @@ jobs:
             fi
           done
 
-          # Verify no disk-collector
-          if grep -q "disk-collector" /tmp/inline-compose.yaml; then
-            echo "FAIL: disk-collector found"
+          # Verify no disk-collector service definition (comments mentioning it are OK)
+          if grep -q "^  disk-collector:" /tmp/inline-compose.yaml; then
+            echo "FAIL: disk-collector service definition found"
             exit 1
           fi
-          echo "OK: No disk-collector"
+          echo "OK: No disk-collector service"
 
           # Verify placeholder is present (will be replaced by installer)
           if grep -q "NOMAD_DIR_PLACEHOLDER" /tmp/inline-compose.yaml; then
