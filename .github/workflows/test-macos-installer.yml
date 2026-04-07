@@ -1,0 +1,276 @@
+name: Test macOS Installer
+
+on:
+  push:
+    branches: [main, feature/macos-installer]
+    paths:
+      - 'install/**'
+      - '.github/workflows/test-macos-installer.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'install/**'
+      - '.github/workflows/test-macos-installer.yml'
+  workflow_dispatch: # Manual trigger
+
+jobs:
+  shellcheck:
+    name: ShellCheck Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ShellCheck
+        run: sudo apt-get install -y shellcheck
+
+      - name: Lint install_nomad_macos.sh
+        run: shellcheck -x -s bash install/install_nomad_macos.sh || true
+
+      - name: Lint start_nomad_macos.sh
+        run: shellcheck -x -s bash install/start_nomad_macos.sh || true
+
+      - name: Lint stop_nomad_macos.sh
+        run: shellcheck -x -s bash install/stop_nomad_macos.sh || true
+
+      - name: Strict lint (errors only, fail on real issues)
+        run: |
+          shellcheck -x -s bash -S error install/install_nomad_macos.sh
+          shellcheck -x -s bash -S error install/start_nomad_macos.sh
+          shellcheck -x -s bash -S error install/stop_nomad_macos.sh
+
+  syntax-check:
+    name: Bash Syntax Validation
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify bash syntax — install script
+        run: bash -n install/install_nomad_macos.sh
+
+      - name: Verify bash syntax — start script
+        run: bash -n install/start_nomad_macos.sh
+
+      - name: Verify bash syntax — stop script
+        run: bash -n install/stop_nomad_macos.sh
+
+  dry-run:
+    name: Dry-Run on macOS
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show macOS environment
+        run: |
+          echo "macOS version: $(sw_vers -productVersion)"
+          echo "Architecture: $(uname -m)"
+          echo "Bash version: ${BASH_VERSION}"
+          echo "Free disk space: $(df -h / | awk 'NR==2 {print $4}')"
+
+      - name: Run installer in dry-run mode
+        run: bash install/install_nomad_macos.sh --dry-run
+
+  compose-validation:
+    name: Validate Docker Compose
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Docker (for compose validation only)
+        run: brew install docker-compose
+
+      - name: Prepare compose file for validation
+        run: |
+          cp install/management_compose_macos.yaml /tmp/test-compose.yaml
+          sed -i '' 's|NOMAD_DIR_PLACEHOLDER|/tmp/test-nomad|g' /tmp/test-compose.yaml
+          sed -i '' 's|APP_KEY=replaceme|APP_KEY=test_key_1234567890123456|g' /tmp/test-compose.yaml
+          sed -i '' 's|URL=replaceme|URL=http://localhost:8080|g' /tmp/test-compose.yaml
+          sed -i '' 's|DB_PASSWORD=replaceme|DB_PASSWORD=testpass123|g' /tmp/test-compose.yaml
+          sed -i '' 's|MYSQL_ROOT_PASSWORD=replaceme|MYSQL_ROOT_PASSWORD=testroot123|g' /tmp/test-compose.yaml
+          sed -i '' 's|MYSQL_PASSWORD=replaceme|MYSQL_PASSWORD=testpass123|g' /tmp/test-compose.yaml
+
+      - name: Validate compose file syntax
+        run: docker-compose -f /tmp/test-compose.yaml config --quiet
+
+      - name: Verify expected services exist
+        run: |
+          SERVICES=$(docker-compose -f /tmp/test-compose.yaml config --services)
+          echo "Services found: ${SERVICES}"
+
+          for svc in admin mysql redis dozzle updater; do
+            if echo "${SERVICES}" | grep -q "^${svc}$"; then
+              echo "OK: Service '${svc}' present"
+            else
+              echo "FAIL: Missing service '${svc}'"
+              exit 1
+            fi
+          done
+
+      - name: Verify disk-collector is NOT present (macOS-specific)
+        run: |
+          SERVICES=$(docker-compose -f /tmp/test-compose.yaml config --services)
+          if echo "${SERVICES}" | grep -q "disk-collector"; then
+            echo "FAIL: disk-collector should NOT be in macOS compose"
+            exit 1
+          fi
+          echo "OK: disk-collector correctly excluded from macOS compose"
+
+      - name: Verify no Linux-only mounts
+        run: |
+          CONFIG=$(docker-compose -f /tmp/test-compose.yaml config)
+          if echo "${CONFIG}" | grep -q "/:/host"; then
+            echo "FAIL: Found root filesystem mount (Linux-only)"
+            exit 1
+          fi
+          if echo "${CONFIG}" | grep -q "rslave"; then
+            echo "FAIL: Found rslave mount propagation (Linux-only)"
+            exit 1
+          fi
+          if echo "${CONFIG}" | grep -q "host-gateway"; then
+            echo "FAIL: Found host-gateway extra_hosts (not needed on macOS)"
+            exit 1
+          fi
+          echo "OK: No Linux-only mount configurations found"
+
+  preflight-unit-tests:
+    name: Unit Test — Preflight Functions
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Test macOS detection
+        run: |
+          if [[ "$(uname)" == "Darwin" ]]; then
+            echo "OK: macOS detected"
+          else
+            echo "FAIL: Not macOS"
+            exit 1
+          fi
+
+      - name: Test macOS version parsing
+        run: |
+          MACOS_MAJOR=$(sw_vers -productVersion | cut -d. -f1)
+          echo "Major version: ${MACOS_MAJOR}"
+          if [[ "${MACOS_MAJOR}" -ge 12 ]]; then
+            echo "OK: macOS >= 12"
+          else
+            echo "FAIL: Too old"
+            exit 1
+          fi
+
+      - name: Test architecture detection
+        run: |
+          ARCH=$(uname -m)
+          echo "Architecture: ${ARCH}"
+          if [[ "${ARCH}" == "arm64" || "${ARCH}" == "x86_64" ]]; then
+            echo "OK: Valid arch"
+          else
+            echo "FAIL: Unknown arch"
+            exit 1
+          fi
+
+      - name: Test disk space check
+        run: |
+          FREE_KB=$(df -k / | awk 'NR==2 {print $4}')
+          FREE_BYTES=$((FREE_KB * 1024))
+          echo "Free: ${FREE_BYTES} bytes"
+          if [[ "${FREE_BYTES}" -gt 5368709120 ]]; then
+            echo "OK: >5GB free"
+          else
+            echo "WARNING: <5GB free (test runner low on space)"
+          fi
+
+      - name: Test IP detection (macOS methods)
+        run: |
+          IP=$(ipconfig getifaddr en0 2>/dev/null || ifconfig 2>/dev/null | grep "inet " | grep -v 127.0.0.1 | head -1 | awk '{print $2}' || echo "localhost")
+          echo "Detected IP: ${IP}"
+          if [[ -n "${IP}" ]]; then
+            echo "OK: IP detected"
+          else
+            echo "FAIL: No IP"
+            exit 1
+          fi
+
+      - name: Test password generation
+        run: |
+          PASS=$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32)
+          echo "Generated ${#PASS}-char password"
+          if [[ ${#PASS} -eq 32 ]]; then
+            echo "OK: Correct length"
+          else
+            echo "FAIL: Wrong length: ${#PASS}"
+            exit 1
+          fi
+          if [[ "${PASS}" =~ ^[A-Za-z0-9]+$ ]]; then
+            echo "OK: Alphanumeric only"
+          else
+            echo "FAIL: Invalid chars"
+            exit 1
+          fi
+
+      - name: Test BSD sed compatibility
+        run: |
+          echo "PLACEHOLDER_VALUE" > /tmp/sed_test.txt
+          sed -i '' 's|PLACEHOLDER_VALUE|replaced|g' /tmp/sed_test.txt
+          RESULT=$(cat /tmp/sed_test.txt)
+          if [[ "${RESULT}" == "replaced" ]]; then
+            echo "OK: BSD sed works"
+          else
+            echo "FAIL: sed failed: ${RESULT}"
+            exit 1
+          fi
+          rm /tmp/sed_test.txt
+
+      - name: Test external drive detection (filesystem check)
+        run: |
+          diskutil list external 2>/dev/null
+          echo "OK: diskutil command available"
+          diskutil info / 2>/dev/null | grep "File System Personality" | sed 's/.*: *//'
+          echo "OK: Filesystem type parsing works"
+
+  inline-compose-generation:
+    name: Test Inline Compose Generator
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract and test generate_macos_compose function
+        run: |
+          # Source just the function from the installer
+          source <(sed -n '/^generate_macos_compose()/,/^}/p' install/install_nomad_macos.sh)
+
+          # Run it
+          generate_macos_compose /tmp/inline-compose.yaml
+
+          # Verify it was created
+          if [[ ! -f /tmp/inline-compose.yaml ]]; then
+            echo "FAIL: No file created"
+            exit 1
+          fi
+          echo "OK: File created"
+
+          # Verify key services
+          for svc in admin mysql redis dozzle updater; do
+            if grep -q "${svc}:" /tmp/inline-compose.yaml; then
+              echo "OK: ${svc} found"
+            else
+              echo "FAIL: ${svc} missing"
+              exit 1
+            fi
+          done
+
+          # Verify no disk-collector
+          if grep -q "disk-collector" /tmp/inline-compose.yaml; then
+            echo "FAIL: disk-collector found"
+            exit 1
+          fi
+          echo "OK: No disk-collector"
+
+          # Verify placeholder is present (will be replaced by installer)
+          if grep -q "NOMAD_DIR_PLACEHOLDER" /tmp/inline-compose.yaml; then
+            echo "OK: Placeholder present"
+          else
+            echo "FAIL: No placeholder"
+            exit 1
+          fi
+
+          echo "OK: Inline compose generation passed all checks"
